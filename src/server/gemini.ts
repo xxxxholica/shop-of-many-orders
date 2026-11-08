@@ -1382,24 +1382,6 @@ export async function evaluateAppWithPersonas(req: EvaluateRequest): Promise<Eva
       finalState: simMap.get(p.id)!.finalState,
     })),
   );
-  // 全員が満足したら、店長の締めのせりふとお助けAIのクリア振り返りを感想と同時に作る
-  const allAchieved = reviewers.every((p) => simMap.get(p.id)!.outcome === 'achieved');
-  const closingPromise = allAchieved
-    ? voiceOwnerLine({
-        situation: 'closing',
-        facts: [
-          `選んだお客さん${owner.customers}人全員が、満足して買ってくれた`,
-          ...owner.metrics.map((m) =>
-            m.missing
-              ? `${m.label}の申し込み欄は画面からなくなった`
-              : `${m.label}の申し込みは${m.count}件`,
-          ),
-        ],
-        fallback: buildOwnerClosingLines(ACTIVE_THEME.owner, owner).join('\n'),
-        history: req.history,
-      })
-    : Promise.resolve(undefined);
-
   const buildFeedbackForSummary = async (summary: Awaited<ReturnType<typeof finalizeTelemetryOnEvaluate>>) => {
     const cohortLabel =
       TARGET_COHORTS.find((c) => c.id === req.cohortId)?.label ?? '選んだ客層';
@@ -1437,7 +1419,6 @@ export async function evaluateAppWithPersonas(req: EvaluateRequest): Promise<Eva
         assistantFeedbackLines: await buildFeedbackForSummary(summary),
       }),
     );
-  const prestartedClearPromise = allAchieved ? finalizeWithClearFeedback() : undefined;
 
   const simulationSummary = reviewers.map((p) => {
     const sim = simMap.get(p.id)!;
@@ -1548,9 +1529,27 @@ export async function evaluateAppWithPersonas(req: EvaluateRequest): Promise<Eva
   });
 
   const achievedCount = results.filter((r) => r.outcome === 'achieved').length;
+  // 最終評価で全員が達成した場合だけ、店長の締めのせりふとクリア振り返りを作る
+  const allAchieved = achievedCount === results.length;
+  const closingPromise = allAchieved
+    ? voiceOwnerLine({
+        situation: 'closing',
+        facts: [
+          `選んだお客さん${owner.customers}人全員が、満足して買ってくれた`,
+          ...owner.metrics.map((m) =>
+            m.missing
+              ? `${m.label}の申し込み欄は画面からなくなった`
+              : `${m.label}の申し込みは${m.count}件`,
+          ),
+        ],
+        fallback: buildOwnerClosingLines(ACTIVE_THEME.owner, owner).join('\n'),
+        history: req.history,
+      })
+    : Promise.resolve(undefined);
+
   const telemetryPromise =
     achievedCount === results.length
-      ? (prestartedClearPromise ?? finalizeWithClearFeedback())
+      ? finalizeWithClearFeedback()
       : finalizeTelemetryOnEvaluate(req.cohortId, achievedCount, results.length, req.runId);
   const [closing, telemetrySummary] = await Promise.all([closingPromise, telemetryPromise]);
   if (closing) owner.closingLines = closing.text.split('\n').filter(Boolean);
