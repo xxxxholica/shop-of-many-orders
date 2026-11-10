@@ -3591,6 +3591,82 @@ function speakerKeyOf(msg: Pick<TimelineMessage, 'role' | 'personaId'>): string 
   return msg.role === 'customer' ? `customer:${msg.personaId ?? ''}` : msg.role;
 }
 
+// 入力欄は一度だけ作って使い回す。描き直しのたびに作り直すと、日本語の変換中の文字が消えてしまう
+let composerInputEl: HTMLTextAreaElement | null = null;
+let composerIsComposing = false;
+let onComposerKeydown: ((e: KeyboardEvent) => void) | null = null;
+let onComposerInput: (() => void) | null = null;
+
+function getComposerInput(): HTMLTextAreaElement {
+  if (composerInputEl) return composerInputEl;
+  const el = document.createElement('textarea');
+  el.rows = 1;
+  el.className = 'composer-input';
+  el.addEventListener('compositionstart', () => {
+    composerIsComposing = true;
+  });
+  el.addEventListener('compositionend', () => {
+    composerIsComposing = false;
+  });
+  // 描き直すたびに最新の状態を見る処理に差し替えるので、ここでは呼び出すだけにする
+  el.addEventListener('keydown', (e) => onComposerKeydown?.(e));
+  el.addEventListener('input', () => onComposerInput?.());
+  composerInputEl = el;
+  return el;
+}
+
+function syncElementAttributes(target: Element, source: Element): void {
+  for (const attr of [...target.attributes]) {
+    if (!source.hasAttribute(attr.name)) target.removeAttribute(attr.name);
+  }
+  for (const attr of [...source.attributes]) {
+    if (target.getAttribute(attr.name) !== attr.value) target.setAttribute(attr.name, attr.value);
+  }
+}
+
+// 新しいチャット欄を画面に出す。入力欄が画面にあるときは、入力欄とその親を画面から外さずに、周りだけを新しいものに入れ替える
+function mountChatPanel(slot: HTMLElement, panel: HTMLElement): void {
+  const input = composerInputEl;
+  const marker = panel.querySelector<HTMLElement>('[data-composer-input-slot]');
+  if (!input || !marker) {
+    slot.replaceChildren(panel);
+    return;
+  }
+  const oldChain: Element[] = [input];
+  const newChain: Element[] = [marker];
+  if (input.isConnected && slot.contains(input) && slot.childNodes.length === 1) {
+    while (oldChain[oldChain.length - 1].parentElement !== slot) {
+      oldChain.push(oldChain[oldChain.length - 1].parentElement as Element);
+    }
+    while (newChain[newChain.length - 1] !== panel) {
+      newChain.push(newChain[newChain.length - 1].parentElement as Element);
+    }
+  }
+  const canGraft =
+    oldChain.length > 1 &&
+    oldChain.length === newChain.length &&
+    oldChain.slice(1).every((el, i) => el.tagName === newChain[i + 1].tagName);
+  if (!canGraft) {
+    marker.replaceWith(input);
+    slot.replaceChildren(panel);
+    return;
+  }
+  for (let i = oldChain.length - 1; i >= 1; i -= 1) {
+    const oldEl = oldChain[i];
+    const newEl = newChain[i];
+    const keepOld = oldChain[i - 1];
+    const keepNew = newChain[i - 1];
+    syncElementAttributes(oldEl, newEl);
+    for (const child of [...oldEl.childNodes]) {
+      if (child !== keepOld) child.remove();
+    }
+    const kids = [...newEl.childNodes];
+    const idx = kids.indexOf(keepNew);
+    for (const child of kids.slice(0, idx)) oldEl.insertBefore(child, keepOld);
+    for (const child of kids.slice(idx + 1)) oldEl.appendChild(child);
+  }
+}
+
 function renderChatPanel(): HTMLElement {
   const chatCard = document.createElement('section');
   chatCard.className = 'vibe-chat-card';
@@ -3988,9 +4064,7 @@ function renderChatPanel(): HTMLElement {
   };
   syncSendButtonState();
 
-  const input = document.createElement('textarea');
-  input.rows = 1;
-  input.className = 'composer-input';
+  const input = getComposerInput();
   input.disabled = isCohortLocked;
   input.placeholder = isCohortLocked
     ? cohortSelectionGuidance()
@@ -4001,8 +4075,11 @@ function renderChatPanel(): HTMLElement {
       : state.isTranscribingAudio
         ? '音声から指示を整えています…'
         : getRecipientPlaceholder(state.recipient);
-  input.value = state.inputText;
-  input.addEventListener('keydown', (e) => {
+  // 日本語を変換している途中で値を書き換えると変換が消えるので、変換中は触らない
+  if (!composerIsComposing && input.value !== state.inputText) {
+    input.value = state.inputText;
+  }
+  onComposerKeydown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       if (e.isComposing || e.keyCode === 229) return;
       e.preventDefault();
@@ -4015,8 +4092,8 @@ function renderChatPanel(): HTMLElement {
         void handleSendMessage();
       }
     }
-  });
-  input.addEventListener('input', () => {
+  };
+  onComposerInput = () => {
     state.inputText = input.value;
     syncComposerTextareaHeight(input);
     syncSendButtonState();
@@ -4036,7 +4113,7 @@ function renderChatPanel(): HTMLElement {
       }
       input.placeholder = getRecipientPlaceholder(state.recipient);
     }
-  });
+  };
 
   const micBtn = document.createElement('button');
   micBtn.type = 'button';
@@ -4062,7 +4139,10 @@ function renderChatPanel(): HTMLElement {
     void toggleVoiceRecording();
   });
 
-  inputWrap.append(input, micBtn);
+  // 入力欄そのものは画面を描き直しても作り直さない。ここには目印だけ置き、mountChatPanel で同じ入力欄をはめ込む
+  const inputSlot = document.createElement('span');
+  inputSlot.dataset.composerInputSlot = '1';
+  inputWrap.append(inputSlot, micBtn);
 
   formRow.append(inputWrap, sendBtn);
   if (state.pendingSend) {
@@ -4336,10 +4416,9 @@ function renderStudio(): void {
   }
 
   if (chatSlotEl) {
-    chatSlotEl.innerHTML = '';
     const chatPanel = renderChatPanel();
-    chatSlotEl.appendChild(chatPanel);
-    const composerTextarea = chatPanel.querySelector<HTMLTextAreaElement>('.composer-input');
+    mountChatPanel(chatSlotEl, chatPanel);
+    const composerTextarea = chatSlotEl.querySelector<HTMLTextAreaElement>('.composer-input');
     if (composerTextarea) {
       syncComposerTextareaHeight(composerTextarea);
     }
@@ -4384,7 +4463,8 @@ function renderStudio(): void {
 
   if (focusedComposer && shellEl) {
     const nextInput = shellEl.querySelector<HTMLTextAreaElement>('.composer-input');
-    if (nextInput) {
+    // 同じ入力欄が画面に残っていればフォーカスも変換もそのままなので、触らない
+    if (nextInput && document.activeElement !== nextInput) {
       nextInput.focus();
       if (selectionStart !== null && selectionEnd !== null) {
         nextInput.setSelectionRange(selectionStart, selectionEnd);
