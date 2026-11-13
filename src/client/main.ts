@@ -198,13 +198,15 @@ function formatCheckpointLabel(cp: Pick<Checkpoint, 'stepNumber'>): string {
 // 記録をみんなの集計に加えるかの同意と、挑戦の始まり・終わりの記録
 // ============================================================================
 
+const PUBLIC_NOTICE_ENABLED = import.meta.env.VITE_PUBLIC_NOTICE === '1';
 const CONSENT_STORAGE_KEY = 'ponkotsu:aggregateConsent';
 /** この時間なにも操作しなければ、挑戦をやめたとみなす */
 const IDLE_END_MS = 30 * 60 * 1000;
 let lastActivityAt = Date.now();
 
-/** 同意はこのブラウザにだけ覚えておく。読めなくても、まだ答えていないとして動く */
+/** 同意はこのブラウザにだけ覚えておく。案内ウィンドウを出さない設定では常に未同意として扱う */
 function loadAggregateConsent(): boolean | undefined {
+  if (!PUBLIC_NOTICE_ENABLED) return undefined;
   try {
     const v = window.localStorage.getItem(CONSENT_STORAGE_KEY);
     return v === 'yes' ? true : v === 'no' ? false : undefined;
@@ -223,23 +225,15 @@ function saveAggregateConsent(consent: boolean): void {
 }
 
 // ============================================================================
-// 読み込むたびに出すウィンドウ：利用上の注意と、集計への協力
+// 公開ホスト時のみ出すウィンドウ：利用上の注意と、集計への協力
 // ============================================================================
 
 const TERMS_SUMMARY = '学習用の架空のお店の注文画面を、AIと一緒に直すツールです。';
 
-/** 運営者と問い合わせ先 */
-const OPERATOR = {
-  team: 'YukiD',
-  representative: 'xxxxholica',
-  representativeUrl: 'https://github.com/xxxxholica',
-  email: 'yukid-df-hack@hinata.works',
-};
-
 /** 利用上の注意。1項目を1行に収まる長さにする。リンクを含む項目は、文字とリンクを並べて書く */
 type TermsPart = string | { text: string; href: string; external?: boolean };
 const TERMS_ITEMS: TermsPart[][] = [
-  ['DevFest Hackathon 2026 提出用の学習用試作品で、商用サービスではありません'],
+  ['学習用の試作品で、商用サービスではありません'],
   ['実際の注文や支払いは起きません'],
   ['指示と画面の画像は Google Cloud の Gemini に送られます。文章は保存しません'],
   ['名前や連絡先など、個人を特定できる情報は入力しないでください'],
@@ -247,19 +241,34 @@ const TERMS_ITEMS: TermsPart[][] = [
   // 1分あたり・同時・1日あたりの上限があることを先に知らせる。数値は環境変数で変わるので書かない
   ['送れる回数と1日の利用量には上限があり、超えると一時的に使えなくなります'],
   ['不審なリクエストは、予告なく制限・拒否することがあります'],
-  // 決勝に進んだ場合の Demo Day（11月27日）と GDG DevFest Tokyo（11月29日）まで動かせるよう、最初から長めにしておく
-  ['公開は11月29日までの予定です。予告なく止めたり変えたりすることがあります'],
+  ['予告なく公開を止めたり内容を変えたりすることがあります'],
 ];
 
-/** 運営者と問い合わせ先。条文とは分けて、注意のすぐ下に、見出しと値の組で並べる */
-const OPERATOR_ITEMS: Array<{ label: string; value: TermsPart[] }> = [
-  { label: '運営', value: [OPERATOR.team] },
-  {
-    label: '代表者',
-    value: [{ text: OPERATOR.representative, href: OPERATOR.representativeUrl, external: true }],
-  },
-  { label: '問い合わせ', value: [{ text: OPERATOR.email, href: `mailto:${OPERATOR.email}` }] },
-];
+/** 運営者と問い合わせ先。環境変数が設定されている項目だけを注意のすぐ下に並べる */
+function buildOperatorItems(): Array<{ label: string; value: TermsPart[] }> {
+  const items: Array<{ label: string; value: TermsPart[] }> = [];
+  const env = import.meta.env as Record<string, string | undefined>;
+  const team = (env.VITE_OPERATOR_TEAM ?? '').trim();
+  const representative = (env.VITE_OPERATOR_NAME ?? '').trim();
+  const representativeUrl = (env.VITE_OPERATOR_URL ?? '').trim();
+  const email = (env.VITE_OPERATOR_EMAIL ?? '').trim();
+
+  if (team) {
+    items.push({ label: '運営', value: [team] });
+  }
+  if (representative) {
+    items.push({
+      label: '代表者',
+      value: /^https?:\/\//i.test(representativeUrl)
+        ? [{ text: representative, href: representativeUrl, external: true }]
+        : [representative],
+    });
+  }
+  if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    items.push({ label: '問い合わせ', value: [{ text: email, href: `mailto:${email}` }] });
+  }
+  return items;
+}
 
 /** 文字とリンクを並べて、1つの要素に書き込む */
 function appendTermsParts(target: HTMLElement, parts: TermsPart[]): void {
@@ -367,17 +376,22 @@ function openTermsDialog(mode: 'first' | 'review', onAccepted?: () => void): voi
     appendTermsParts(li, parts);
     noticeList.appendChild(li);
   }
-  const operatorLine = document.createElement('dl');
-  operatorLine.className = 'terms-operator';
-  for (const item of OPERATOR_ITEMS) {
-    const pair = document.createElement('div');
-    pair.className = 'terms-operator-item';
-    const dt = document.createElement('dt');
-    dt.textContent = item.label;
-    const dd = document.createElement('dd');
-    appendTermsParts(dd, item.value);
-    pair.append(dt, dd);
-    operatorLine.appendChild(pair);
+  const bodyNodes: Node[] = [noticeHeading, noticeList];
+  const operatorItems = buildOperatorItems();
+  if (operatorItems.length > 0) {
+    const operatorLine = document.createElement('dl');
+    operatorLine.className = 'terms-operator';
+    for (const item of operatorItems) {
+      const pair = document.createElement('div');
+      pair.className = 'terms-operator-item';
+      const dt = document.createElement('dt');
+      dt.textContent = item.label;
+      const dd = document.createElement('dd');
+      appendTermsParts(dd, item.value);
+      pair.append(dt, dd);
+      operatorLine.appendChild(pair);
+    }
+    bodyNodes.push(operatorLine);
   }
 
   // 自分で選ぶ所。枠で囲んで目立たせ、チェックはまだ選んでいなければ外しておき、選んだことがあればその答えを出す
@@ -398,13 +412,14 @@ function openTermsDialog(mode: 'first' | 'review', onAccepted?: () => void): voi
   notes.className = 'terms-notes';
   notes.textContent = AGGREGATE_NOTES.join('');
   consentBox.append(checkLabel, notes);
+  bodyNodes.push(consentBox);
 
   mountModalDialog({
     guardSelector: '.terms-overlay',
     titleId: 'terms-title',
     titleText: mode === 'first' ? 'はじめに' : 'このツールについて',
     summaryText: TERMS_SUMMARY,
-    bodyNodes: [noticeHeading, noticeList, operatorLine, consentBox],
+    bodyNodes,
     actionLabel: mode === 'first' ? '同意して始める' : '閉じる',
     dismissible: mode === 'review',
     onFinish: (close) => {
@@ -4224,15 +4239,18 @@ function ensureStudioShellInitialized(): void {
   statsBtn.className = 'footer-link stats-btn';
   statsBtn.textContent = 'みんなの集計';
   statsBtn.addEventListener('click', openAggregateStatsDialog);
+  footer.appendChild(statsBtn);
 
-  // 利用上の注意と集計への協力を、いつでも読み直せる
-  const aboutBtn = document.createElement('button');
-  aboutBtn.type = 'button';
-  aboutBtn.className = 'footer-link about-btn';
-  aboutBtn.textContent = 'このツールについて';
-  aboutBtn.addEventListener('click', () => openTermsDialog('review'));
+  // 公開ホスト用の案内を有効にしたときだけ、利用上の注意と集計への協力を読み直せるリンクを出す
+  if (PUBLIC_NOTICE_ENABLED) {
+    const aboutBtn = document.createElement('button');
+    aboutBtn.type = 'button';
+    aboutBtn.className = 'footer-link about-btn';
+    aboutBtn.textContent = 'このツールについて';
+    aboutBtn.addEventListener('click', () => openTermsDialog('review'));
+    footer.appendChild(aboutBtn);
+  }
 
-  footer.append(statsBtn, aboutBtn);
   shellEl.appendChild(footer);
 
   appRoot.innerHTML = '';
@@ -4486,7 +4504,10 @@ window.addEventListener('resize', () => {
   }
 });
 
-// ページを読み込むたびに利用上の注意を出し、同意してから店長の紹介を始める
-// 後ろに画面を出しておき、何のツールかが見える状態で読んでもらう
+// 公開ホスト用の案内が有効なときだけ利用上の注意を先に出し、既定ではすぐ店長の紹介を始める
 renderStudio();
-openTermsDialog('first', playInitialWelcomeSequence);
+if (PUBLIC_NOTICE_ENABLED) {
+  openTermsDialog('first', playInitialWelcomeSequence);
+} else {
+  playInitialWelcomeSequence();
+}

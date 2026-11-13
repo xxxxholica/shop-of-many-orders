@@ -224,7 +224,7 @@ describe('core-loop', () => {
     assert.equal(isAllowedOrigin(req({ host: 'app.example.run.app', origin: 'https://app.example.run.app' })), true);
     assert.equal(isAllowedOrigin(req({ host: 'app.example.run.app', origin: 'https://evil.example.com' })), false);
     assert.equal(
-      isAllowedOrigin(req({ host: 'app.example.run.app', 'x-forwarded-host': 'yukid.web.app', origin: 'https://yukid.web.app' })),
+      isAllowedOrigin(req({ host: 'app.example.run.app', 'x-forwarded-host': 'studio.web.app', origin: 'https://studio.web.app' })),
       true,
     );
     // 先頭に偽装ホストを付け足した X-Forwarded-Host や、HTTPS 配信への HTTP ダウングレード呼び出しは断る
@@ -232,7 +232,7 @@ describe('core-loop', () => {
       isAllowedOrigin(
         req({
           host: 'app.example.run.app',
-          'x-forwarded-host': 'evil.example.com, yukid.web.app',
+          'x-forwarded-host': 'evil.example.com, studio.web.app',
           origin: 'https://evil.example.com',
         }),
       ),
