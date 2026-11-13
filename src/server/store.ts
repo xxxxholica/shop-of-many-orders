@@ -96,6 +96,43 @@ export async function getGcpAccessToken(): Promise<string | null> {
   }
 }
 
+const FIRESTORE_TIMEOUT_MS = 2500;
+
+export async function requestFirestoreJson<T = unknown>(
+  subpath: string,
+  options?: {
+    method?: 'GET' | 'POST' | 'PATCH';
+    body?: unknown;
+    token?: string;
+    parseJson?: boolean;
+  },
+): Promise<{ status: number; ok: boolean; data: T | null } | null> {
+  const baseUrl = getFirestoreDocumentsBaseUrl();
+  if (!baseUrl) return null;
+  try {
+    const token = options?.token ?? (await getGcpAccessToken());
+    if (!token) return null;
+    const method = options?.method ?? 'GET';
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+    };
+    if (options?.body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+    }
+    const res = await fetch(`${baseUrl}${subpath}`, {
+      method,
+      headers,
+      body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(FIRESTORE_TIMEOUT_MS),
+    });
+    const shouldParse = options?.parseJson ?? method === 'GET';
+    const data = shouldParse && res.ok ? ((await res.json()) as T) : null;
+    return { status: res.status, ok: res.ok, data };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 人間の判断記録 (Own the Why) を保存する。
  * Cloud Firestore 環境が構成されている場合は ADC トークン付き REST 経由で送信する。
@@ -104,41 +141,25 @@ export async function getGcpAccessToken(): Promise<string | null> {
 export async function saveHumanDecision(
   decision: HumanDecisionRecord,
 ): Promise<{ persistedToFirestore: boolean }> {
-  const baseUrl = getFirestoreDocumentsBaseUrl();
-  if (!baseUrl || !isSafeFirestoreDocId(decision.id)) {
+  if (!isSafeFirestoreDocId(decision.id)) {
     return { persistedToFirestore: false };
   }
-
-  try {
-    const token = await getGcpAccessToken();
-    if (!token) {
-      return { persistedToFirestore: false };
-    }
-    const expireAt = new Date(Date.now() + TELEMETRY_TTL_MS).toISOString();
-    const endpoint = `${baseUrl}/decisions?documentId=${encodeURIComponent(decision.id)}`;
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
+  const expireAt = new Date(Date.now() + TELEMETRY_TTL_MS).toISOString();
+  const res = await requestFirestoreJson(`/decisions?documentId=${encodeURIComponent(decision.id)}`, {
+    method: 'POST',
+    body: {
+      fields: {
+        stage: { stringValue: decision.stage },
+        targetId: { stringValue: decision.targetId },
+        chosenLabel: { stringValue: decision.chosenLabel },
+        reason: { stringValue: decision.reason },
+        recordedVia: { stringValue: decision.recordedVia },
+        createdAt: { stringValue: decision.createdAt },
+        expireAt: { timestampValue: expireAt },
       },
-      body: JSON.stringify({
-        fields: {
-          stage: { stringValue: decision.stage },
-          targetId: { stringValue: decision.targetId },
-          chosenLabel: { stringValue: decision.chosenLabel },
-          reason: { stringValue: decision.reason },
-          recordedVia: { stringValue: decision.recordedVia },
-          createdAt: { stringValue: decision.createdAt },
-          expireAt: { timestampValue: expireAt },
-        },
-      }),
-      signal: AbortSignal.timeout(2500),
-    });
-    return { persistedToFirestore: res.ok };
-  } catch {
-    return { persistedToFirestore: false };
-  }
+    },
+  });
+  return { persistedToFirestore: Boolean(res?.ok) };
 }
 
 const ARCHETYPE_ANCHOR_TEXTS: Record<Exclude<PromptArchetype, 'inquiry'>, string> = {
@@ -517,52 +538,34 @@ export function mergeTelemetryEvents(
  */
 async function fetchRunTelemetryFromFirestore(runId?: string): Promise<PromptTelemetryEvent[]> {
   if (!runId) return [];
-  const baseUrl = getFirestoreDocumentsBaseUrl();
-  if (!baseUrl) return [];
-
-  try {
-    const token = await getGcpAccessToken();
-    if (!token) return [];
-
-    const url = `${baseUrl}:runQuery`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId: 'prompt_telemetry' }],
-          where: {
-            fieldFilter: {
-              field: { fieldPath: 'runId' },
-              op: 'EQUAL',
-              value: { stringValue: runId },
-            },
+  const res = await requestFirestoreJson<Array<{ document?: FirestoreDocumentLike }>>(':runQuery', {
+    method: 'POST',
+    parseJson: true,
+    body: {
+      structuredQuery: {
+        from: [{ collectionId: 'prompt_telemetry' }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'runId' },
+            op: 'EQUAL',
+            value: { stringValue: runId },
           },
-          limit: 100,
         },
-      }),
-      signal: AbortSignal.timeout(2500),
-    });
-    if (!res.ok) return [];
-
-    const rows = (await res.json()) as Array<{ document?: FirestoreDocumentLike }>;
-    if (!Array.isArray(rows)) return [];
-    const nowMs = Date.now();
-    const events: PromptTelemetryEvent[] = [];
-    for (const row of rows) {
-      if (!row?.document) continue;
-      const parsed = parseFirestoreTelemetryDoc(row.document, nowMs);
-      if (parsed && parsed.runId === runId) {
-        events.push(parsed);
-      }
+        limit: 100,
+      },
+    },
+  });
+  if (!res?.ok || !Array.isArray(res.data)) return [];
+  const nowMs = Date.now();
+  const events: PromptTelemetryEvent[] = [];
+  for (const row of res.data) {
+    if (!row?.document) continue;
+    const parsed = parseFirestoreTelemetryDoc(row.document, nowMs);
+    if (parsed && parsed.runId === runId) {
+      events.push(parsed);
     }
-    return events;
-  } catch {
-    return [];
   }
+  return events;
 }
 
 /**
@@ -578,23 +581,15 @@ async function persistTelemetryToCloud(event: PromptTelemetryEvent, shareForAggr
     const token = await getGcpAccessToken();
     if (!token) return;
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    };
-
     // 1. Cloud Firestore への保存
-    const firestoreBase = getFirestoreDocumentsBaseUrl();
-    if (firestoreBase && isSafeFirestoreDocId(event.id)) {
-      const firestoreUrl = `${firestoreBase}/prompt_telemetry?documentId=${encodeURIComponent(event.id)}`;
-      void fetch(firestoreUrl, {
+    if (isSafeFirestoreDocId(event.id)) {
+      void requestFirestoreJson(`/prompt_telemetry?documentId=${encodeURIComponent(event.id)}`, {
         method: 'POST',
-        headers,
-        body: JSON.stringify({
+        token,
+        body: {
           fields: toFirestoreTelemetryFields(event),
-        }),
-        signal: AbortSignal.timeout(2500),
-      }).catch(() => {});
+        },
+      });
     }
 
     // 2. BigQuery Streaming Insert への保存。集計に加えることに同意した挑戦だけ
@@ -760,14 +755,11 @@ export async function recordPromptTelemetryEvent(input: {
 }
 
 /**
- * 顧客シミュレーション実行後、直近のテレメトリイベントに結果（何人満足したか・クリアしたか）を紐づけ、
- * 現在のコホートの集計サマリーを返す。
+ * 顧客シミュレーション実行後、現在のコホートの挑戦記録を集計してサマリーを返す。
  * Cloud Run で別のインスタンスが途中の発言を処理していても欠けないよう、Firestore の記録も合わせて集計する
  */
 export async function finalizeTelemetryOnEvaluate(
   cohortId: TargetCohortId | undefined,
-  _achievedCount: number,
-  _totalCustomers: number,
   runId?: string,
   turnCount?: number,
 ): Promise<PromptSessionSummary> {

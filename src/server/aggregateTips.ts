@@ -16,10 +16,9 @@ import { MIN_PUBLIC_RUN_COUNT } from '../shared/promptTelemetry.ts';
 import type { PublicAggregateStats } from '../shared/types.ts';
 import { draftAggregateTipsWithGemini } from './gemini.ts';
 import {
-  getFirestoreDocumentsBaseUrl,
-  getGcpAccessToken,
   getPublicAggregateStats,
   isSafeFirestoreDocId,
+  requestFirestoreJson,
 } from './store.ts';
 
 /** コツを作り直す間隔 */
@@ -71,31 +70,17 @@ function refreshAtFor(value: PublicAggregateTips, now: number): number {
 // ============================================================================
 
 const FIRESTORE_COLLECTION = 'aggregate_tips';
-const FIRESTORE_TIMEOUT_MS = 2500;
 const MAX_STORED_PAYLOAD_LENGTH = 32_000;
 
-function firestoreDocUrl(key: string): string | null {
-  const baseUrl = getFirestoreDocumentsBaseUrl();
-  if (!baseUrl || !isSafeFirestoreDocId(key)) return null;
-  return `${baseUrl}/${FIRESTORE_COLLECTION}/${encodeURIComponent(key)}`;
-}
-
 async function readStoredFromFirestore(key: string): Promise<PublicAggregateTips | null> {
-  const url = firestoreDocUrl(key);
-  if (!url) return null;
+  if (!isSafeFirestoreDocId(key)) return null;
+  const res = await requestFirestoreJson<{
+    fields?: { payload?: { stringValue?: string }; version?: { stringValue?: string } };
+  }>(`/${FIRESTORE_COLLECTION}/${encodeURIComponent(key)}`);
+  if (!res?.ok || !res.data) return null;
   try {
-    const token = await getGcpAccessToken();
-    if (!token) return null;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(FIRESTORE_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    const doc = (await res.json()) as {
-      fields?: { payload?: { stringValue?: string }; version?: { stringValue?: string } };
-    };
-    if (doc.fields?.version?.stringValue !== AGGREGATE_TIPS_VERSION) return null;
-    const payload = doc.fields?.payload?.stringValue;
+    if (res.data.fields?.version?.stringValue !== AGGREGATE_TIPS_VERSION) return null;
+    const payload = res.data.fields?.payload?.stringValue;
     if (!payload || payload.length > MAX_STORED_PAYLOAD_LENGTH) return null;
     const parsed: unknown = JSON.parse(payload);
     return isPublicAggregateTips(parsed) ? parsed : null;
@@ -106,26 +91,17 @@ async function readStoredFromFirestore(key: string): Promise<PublicAggregateTips
 
 /** 保存するのは集計の値とコツの文だけ。発言の本文や個人を特定できる情報は入っていない */
 async function writeStoredToFirestore(key: string, value: PublicAggregateTips): Promise<void> {
-  const url = firestoreDocUrl(key);
-  if (!url) return;
-  try {
-    const token = await getGcpAccessToken();
-    if (!token) return;
-    await fetch(url, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        fields: {
-          payload: { stringValue: JSON.stringify(value) },
-          version: { stringValue: AGGREGATE_TIPS_VERSION },
-          generatedAt: { timestampValue: value.generatedAt },
-        },
-      }),
-      signal: AbortSignal.timeout(FIRESTORE_TIMEOUT_MS),
-    });
-  } catch {
-    // 保存に失敗しても、メモリのコツは使える
-  }
+  if (!isSafeFirestoreDocId(key)) return;
+  await requestFirestoreJson(`/${FIRESTORE_COLLECTION}/${encodeURIComponent(key)}`, {
+    method: 'PATCH',
+    body: {
+      fields: {
+        payload: { stringValue: JSON.stringify(value) },
+        version: { stringValue: AGGREGATE_TIPS_VERSION },
+        generatedAt: { timestampValue: value.generatedAt },
+      },
+    },
+  });
 }
 
 const defaultDeps: AggregateTipsDeps = {

@@ -227,6 +227,27 @@ describe('core-loop', () => {
       isAllowedOrigin(req({ host: 'app.example.run.app', 'x-forwarded-host': 'yukid.web.app', origin: 'https://yukid.web.app' })),
       true,
     );
+    // 先頭に偽装ホストを付け足した X-Forwarded-Host や、HTTPS 配信への HTTP ダウングレード呼び出しは断る
+    assert.equal(
+      isAllowedOrigin(
+        req({
+          host: 'app.example.run.app',
+          'x-forwarded-host': 'evil.example.com, yukid.web.app',
+          origin: 'https://evil.example.com',
+        }),
+      ),
+      false,
+    );
+    assert.equal(
+      isAllowedOrigin(
+        req({
+          host: 'app.example.run.app',
+          'x-forwarded-proto': 'https',
+          origin: 'http://app.example.run.app',
+        }),
+      ),
+      false,
+    );
     assert.equal(isAllowedOrigin(req({ host: 'localhost:5173', origin: 'http://localhost:5173' })), true);
     assert.equal(isAllowedOrigin(req({ host: 'localhost:5173', origin: 'null' })), false);
 
@@ -894,7 +915,7 @@ describe('core-loop', () => {
     const second = await recordPromptTelemetryEvent({ ...base, runId: 'run-2', turnIndex: 0, promptText: '定期便の初期チェックを外して', changedComponentIds: ['check-subscription'] });
     // 別の挑戦で同じ部品を触っていても、手戻りとは数えない
     assert.equal(second.isReworkOnSameComponent, false);
-    const summary = await finalizeTelemetryOnEvaluate('thrifty', 3, 3, 'run-2');
+    const summary = await finalizeTelemetryOnEvaluate('thrifty', 'run-2');
     assert.equal(summary.executeTurns, 1);
     assert.equal(summary.reworkTurns, 0);
     assert.ok(!summary.systemLogLines.some((l) => l.includes('{{turn:5}}') || l.includes('{{turn:7}}')));
@@ -1122,7 +1143,6 @@ describe('core-loop', () => {
       targetId: 'kazuko',
       chosenLabel: '和子:直す',
       reason: '目が遠い人でも読めるように文字を大きくしたいから',
-      cohortId: 'careful',
     });
     assert.equal(decisionRes.decision.stage, 'review_disposition');
     assert.equal(decisionRes.decision.reason, '');
@@ -1132,7 +1152,6 @@ describe('core-loop', () => {
       targetId: 'careful',
       chosenLabel: '確実に買いたい人',
       reason: '',
-      cohortId: 'careful',
     });
     assert.equal(noReasonRes.decision.reason, '');
 
@@ -1898,7 +1917,7 @@ describe('core-loop', () => {
     assert.equal('promptText' in secondExecEvent, false);
 
     // 5. クリア時のサマリー生成とシステムメッセージ行（括弧なし・インラインコード付き）の確認
-    const summary = await finalizeTelemetryOnEvaluate('careful', 3, 3);
+    const summary = await finalizeTelemetryOnEvaluate('careful');
     assert.equal(summary.exploreTurns, 2);
     assert.equal(summary.executeTurns, 2);
     assert.equal(summary.reworkTurns, 1);
@@ -2141,7 +2160,7 @@ describe('core-loop', () => {
       changedComponentIds: ['check-subscription'],
       removedNeededFeature: false,
     });
-    const undoSummary = await finalizeTelemetryOnEvaluate('thrifty', 3, 3, 'run-undo-test', 1);
+    const undoSummary = await finalizeTelemetryOnEvaluate('thrifty', 'run-undo-test', 1);
     assert.equal(undoSummary.exploreTurns, 0);
     assert.equal(undoSummary.executeTurns, 1);
   });
@@ -2838,6 +2857,20 @@ describe('任意の選択欄と押しやすいチェック欄', () => {
     assert.throws(() => evaluateExpression('('.repeat(60) + '1' + ')'.repeat(60), {}), /深すぎます/);
     assert.equal(findPersonalInfoByRules('連絡先は ｔｅｓｔ＠ｅｘａｍｐｌｅ．ｃｏｍ です'), true);
     assert.ok(!sanitizeCustomCss('.box { background-image: image-set("https://evil.example/a.png" 1x); }').includes('evil.example'));
+
+    // 入れ子タグ偽装・数値文字参照による javascript: スキーム・部品ID偽装属性・外部画像URLも除去する
+    const nestedSanitized = sanitizeCustomHtml(
+      '<scr<script>alert(1)</script>ipt>evil()</script><a href="&#106;avascript:alert(1)" data-component-id="btn-order" popover>リンク</a><img src="https://evil.example/pixel.png">',
+    );
+    assert.ok(!nestedSanitized.toLowerCase().includes('<script'));
+    assert.ok(!nestedSanitized.toLowerCase().includes('javascript'));
+    assert.ok(!nestedSanitized.includes('data-component-id'));
+    assert.ok(!nestedSanitized.includes('popover'));
+    assert.ok(!nestedSanitized.includes('evil.example'));
+
+    const oversizedCaptionSpec = structuredClone(salesPush);
+    oversizedCaptionSpec.components[0].caption = 'あ'.repeat(600);
+    assert.equal(isValidAppSpec(oversizedCaptionSpec), false);
   });
 
   it('満足が増えなかったときの一言は、未達成のお客さんが気にする部品が前と変わったときだけ出す', () => {

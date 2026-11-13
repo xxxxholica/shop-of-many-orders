@@ -65,12 +65,32 @@ const FORBIDDEN_PATTERNS = [
     re: /(?:^|[\s"'`(=])([A-Za-z]:[\\/]+Users[\\/]+[a-zA-Z0-9._-]+)/,
   },
   {
+    name: 'Linux ローカルホームパス (/home/<user>/)',
+    re: /(?:^|[\s"'`(=:/])(\/home\/(?!node\b|nonroot\b|runner\b)[a-zA-Z0-9._-]+\/)/,
+  },
+  {
     name: 'Google API キー (AIza...)',
     re: new RegExp('(AIza' + '[0-9A-Za-z_-]{35})'),
   },
   {
+    name: 'Google OAuth アクセストークン (ya29....)',
+    re: new RegExp('(ya29\\.' + '[0-9A-Za-z_-]{20,})'),
+  },
+  {
+    name: 'Google OAuth クライアントシークレット (GOCSPX-...)',
+    re: new RegExp('(GOCSPX-' + '[0-9A-Za-z_-]{20,})'),
+  },
+  {
+    name: 'GCP サービスアカウントメール (*.iam.gserviceaccount.com)',
+    re: new RegExp('([a-z0-9-]+@[a-z0-9-]+\\.iam\\.' + 'gserviceaccount\\.com)', 'i'),
+  },
+  {
+    name: 'GitHub パーソナルアクセストークン (ghp_... / github_pat_...)',
+    re: new RegExp('((?:gh[pousr]_[A-Za-z0-9_]{30,}|github_pat_' + '[A-Za-z0-9_]{30,}))'),
+  },
+  {
     name: '秘密鍵 (PRIVATE KEY)',
-    re: new RegExp('(-----BEGIN (?:RSA |EC )?' + 'PRIVATE KEY-----)'),
+    re: new RegExp('(-----BEGIN (?:[A-Z0-9 ]+ )?' + 'PRIVATE KEY-----)'),
   },
 ];
 

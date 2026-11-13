@@ -97,5 +97,20 @@ describe('check-hygiene', () => {
 
     const privKeyLiteral = findForbiddenContent('-----BEGIN ' + 'PRIVATE KEY-----', 'service-account.json');
     assert.equal(privKeyLiteral.length, 1);
+
+    const opensshKeyLiteral = findForbiddenContent('-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', 'id_ed25519');
+    assert.equal(opensshKeyLiteral.length, 1);
+
+    const linuxLiteral = findForbiddenContent('const p = "/h' + 'ome/alice/project";', 'src/main.ts');
+    assert.equal(linuxLiteral.length, 1);
+
+    const oauthLiteral = findForbiddenContent('Bearer ya29.' + 'a0AfH6SMBx1234567890abcdefghij', 'src/auth.ts');
+    assert.equal(oauthLiteral.length, 1);
+
+    const saEmailLiteral = findForbiddenContent('bot@my-proj-123.iam.' + 'gserviceaccount.com', 'config.json');
+    assert.equal(saEmailLiteral.length, 1);
+
+    const ghPatLiteral = findForbiddenContent('token = "ghp_' + '1234567890abcdefghijklmnopqrstuvwx"', '.env');
+    assert.equal(ghPatLiteral.length, 1);
   });
 });

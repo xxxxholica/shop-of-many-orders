@@ -274,6 +274,8 @@ export function isValidAppSpec(value: unknown): value is AppSpec {
   ) {
     return false;
   }
+  const isOptionalBoundedStr = (v: unknown, max: number) =>
+    v === undefined || (typeof v === 'string' && v.length <= max);
   return (
     candidate.components.every(
       (c) =>
@@ -284,6 +286,20 @@ export function isValidAppSpec(value: unknown): value is AppSpec {
         c.type.length <= 40 &&
         typeof c.label === 'string' &&
         c.label.length <= 500 &&
+        isOptionalBoundedStr(c.badge, 120) &&
+        isOptionalBoundedStr(c.caption, 500) &&
+        isOptionalBoundedStr(c.priceLabel, 120) &&
+        isOptionalBoundedStr(c.placeholder, 500) &&
+        isOptionalBoundedStr(c.icon, 80) &&
+        isOptionalBoundedStr(c.closeLabel, 120) &&
+        (c.optionDetails === undefined ||
+          (Array.isArray(c.optionDetails) &&
+            c.optionDetails.length <= 20 &&
+            c.optionDetails.every((d) => typeof d === 'string' && d.length <= 300))) &&
+        (c.behavior === undefined ||
+          (Boolean(c.behavior) &&
+            typeof c.behavior === 'object' &&
+            isOptionalBoundedStr(c.behavior.confirmText, 500))) &&
         (c.customHtml === undefined || (typeof c.customHtml === 'string' && c.customHtml.length <= 10_000)) &&
         (c.customCss === undefined || (typeof c.customCss === 'string' && c.customCss.length <= 5_000)) &&
         (c.options === undefined ||
@@ -311,6 +327,9 @@ export function isValidAppSpec(value: unknown): value is AppSpec {
           (a) =>
             Boolean(a) &&
             typeof a === 'object' &&
+            typeof a.type === 'string' &&
+            a.type.length <= 40 &&
+            isOptionalBoundedStr(a.message, 500) &&
             (a.targetKey === undefined ||
               (typeof a.targetKey === 'string' && isSafeStateKey(a.targetKey))),
         ) &&
@@ -383,6 +402,7 @@ function sendJson(
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Frame-Options': 'DENY',
+    Vary: 'Origin',
   });
   res.end(body);
 }
@@ -488,6 +508,9 @@ async function routeApiRequest(
       if (!isAllowedDecision) {
         sendJson(res, 400, { error: '有効な stage, targetId, chosenLabel が必要です' });
         return true;
+      }
+      if (body.stage === 'review_disposition') {
+        await assertPromptAllowed(body.chosenLabel);
       }
       // 判断の記録に残すのは決まった値だけ。自由に書かれた理由は受け取らない
       const result = await recordHumanDecisionWithFunctionCalling({
@@ -627,8 +650,13 @@ async function routeApiRequest(
         sendJson(res, 400, { error: 'text が必要です' });
         return true;
       }
+      const text = body.text.slice(0, 400);
+      if (findPersonalInfoByRules(text)) {
+        sendJson(res, 200, { fallbackBrowserTts: true });
+        return true;
+      }
       const result = await synthesizeStudioSpeech({
-        text: body.text.slice(0, 400),
+        text,
         speaker: typeof body.speaker === 'string' ? body.speaker.slice(0, 40) : 'assistant',
       });
       sendJson(res, 200, result);

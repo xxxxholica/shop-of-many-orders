@@ -103,5 +103,5 @@ server.requestTimeout = 30_000;
 server.headersTimeout = 15_000;
 
 server.listen(PORT, () => {
-  console.log(`[yukid-df-hack] Server listening on http://localhost:${PORT}`);
+  console.log(`[shop-of-many-orders] Server listening on http://localhost:${PORT}`);
 });

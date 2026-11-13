@@ -14,9 +14,8 @@ import {
 } from '../shared/customComponentProfile.ts';
 import type { AppComponent, AppSpec } from '../shared/types.ts';
 import {
-  getFirestoreDocumentsBaseUrl,
-  getGcpAccessToken,
   isSafeFirestoreDocId,
+  requestFirestoreJson,
 } from './store.ts';
 
 /**
@@ -66,7 +65,6 @@ export function clearCustomProfileMemoryCache(): void {
 // ============================================================================
 
 const FIRESTORE_COLLECTION = 'custom_component_profiles';
-const FIRESTORE_TIMEOUT_MS = 2500;
 
 type FsValue = { stringValue?: string; booleanValue?: boolean };
 
@@ -100,33 +98,12 @@ function fromFirestoreFields(fields: Record<string, FsValue> | undefined): Custo
   return isCustomComponentProfile(candidate) ? pickCustomComponentProfile(candidate) : null;
 }
 
-async function firestoreHeaders(): Promise<Record<string, string> | null> {
-  const token = await getGcpAccessToken();
-  if (!token) return null;
-  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
-}
-
-function collectionUrl(): string | null {
-  const baseUrl = getFirestoreDocumentsBaseUrl();
-  return baseUrl ? `${baseUrl}/${FIRESTORE_COLLECTION}` : null;
-}
-
 async function readFromFirestore(key: string): Promise<CustomComponentProfile | null> {
-  const base = collectionUrl();
-  if (!base || !isSafeFirestoreDocId(key)) return null;
-  try {
-    const headers = await firestoreHeaders();
-    if (!headers) return null;
-    const res = await fetch(`${base}/${encodeURIComponent(key)}`, {
-      headers,
-      signal: AbortSignal.timeout(FIRESTORE_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    const doc = (await res.json()) as { fields?: Record<string, FsValue> };
-    return fromFirestoreFields(doc.fields);
-  } catch {
-    return null;
-  }
+  if (!isSafeFirestoreDocId(key)) return null;
+  const res = await requestFirestoreJson<{ fields?: Record<string, FsValue> }>(
+    `/${FIRESTORE_COLLECTION}/${encodeURIComponent(key)}`,
+  );
+  return res?.ok && res.data ? fromFirestoreFields(res.data.fields) : null;
 }
 
 /**
@@ -137,24 +114,18 @@ async function writeOnceToFirestore(
   key: string,
   profile: CustomComponentProfile,
 ): Promise<CustomComponentProfile> {
-  const base = collectionUrl();
-  if (!base || !isSafeFirestoreDocId(key)) return profile;
-  try {
-    const headers = await firestoreHeaders();
-    if (!headers) return profile;
-    const res = await fetch(`${base}?documentId=${encodeURIComponent(key)}`, {
+  if (!isSafeFirestoreDocId(key)) return profile;
+  const res = await requestFirestoreJson(
+    `/${FIRESTORE_COLLECTION}?documentId=${encodeURIComponent(key)}`,
+    {
       method: 'POST',
-      headers,
-      body: JSON.stringify({ fields: toFirestoreFields(profile) }),
-      signal: AbortSignal.timeout(FIRESTORE_TIMEOUT_MS),
-    });
-    if (res.status === 409) {
-      return (await readFromFirestore(key)) ?? profile;
-    }
-    return profile;
-  } catch {
-    return profile;
+      body: { fields: toFirestoreFields(profile) },
+    },
+  );
+  if (res?.status === 409) {
+    return (await readFromFirestore(key)) ?? profile;
   }
+  return profile;
 }
 
 // ============================================================================

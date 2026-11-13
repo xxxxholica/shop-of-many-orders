@@ -240,6 +240,7 @@ export const COMMON_SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
   'X-Robots-Tag': 'noindex, nofollow, noarchive',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Cross-Origin-Resource-Policy': 'same-origin',
   'Permissions-Policy': 'camera=(), geolocation=(), payment=(), usb=()',
 };
 
@@ -272,23 +273,45 @@ export function isAllowedOrigin(req: IncomingMessage): boolean {
   if (!origin) {
     return req.headers['sec-fetch-site'] === 'same-origin';
   }
-  let originHost: string;
+  let parsedOrigin: URL;
   try {
-    originHost = new URL(origin).host;
+    parsedOrigin = new URL(origin);
   } catch {
     return false;
   }
-  const forwarded = req.headers['x-forwarded-host'];
-  const hosts = [
-    req.headers.host,
-    ...(Array.isArray(forwarded) ? forwarded : (forwarded ?? '').split(',')),
-  ]
-    .map((h) => (h ?? '').trim())
-    .filter(Boolean);
-  if (hosts.includes(originHost)) return true;
+  if (parsedOrigin.protocol !== 'https:' && parsedOrigin.protocol !== 'http:') {
+    return false;
+  }
   const allowed = (process.env.ALLOWED_ORIGINS ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  return allowed.includes(origin);
+  if (allowed.includes(parsedOrigin.origin)) return true;
+
+  // 逆プロキシが HTTPS で受けている場合は HTTP からのダウングレード呼び出しを断る
+  const rawProto = req.headers['x-forwarded-proto'];
+  const lastProto = (Array.isArray(rawProto) ? rawProto.at(-1) : rawProto)
+    ?.split(',')
+    .at(-1)
+    ?.trim()
+    .toLowerCase();
+  if (lastProto === 'https' && parsedOrigin.protocol !== 'https:') {
+    return false;
+  }
+
+  // X-Forwarded-Host はクライアント側で先頭に偽装値を付け足せるため、プロキシが付与した末尾のみを見る
+  const rawForwardedHost = req.headers['x-forwarded-host'];
+  const lastForwardedHost = (
+    Array.isArray(rawForwardedHost) ? rawForwardedHost.at(-1) : rawForwardedHost
+  )
+    ?.split(',')
+    .at(-1)
+    ?.trim()
+    .toLowerCase();
+  const directHost = req.headers.host?.trim().toLowerCase();
+  const originHost = parsedOrigin.host.toLowerCase();
+  return (
+    originHost === directHost ||
+    (Boolean(lastForwardedHost) && originHost === lastForwardedHost)
+  );
 }

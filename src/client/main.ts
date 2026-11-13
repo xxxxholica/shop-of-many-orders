@@ -285,6 +285,71 @@ const AGGREGATE_NOTES = [
   '画面下の「このツールについて」からいつでも変えられ、次の挑戦から反映されます。',
 ];
 
+function mountModalDialog(options: {
+  guardSelector: string;
+  overlayClass?: string;
+  dialogClass?: string;
+  titleId: string;
+  titleText: string;
+  summaryText: string;
+  bodyNodes: Node[];
+  actionLabel: string;
+  dismissible: boolean;
+  onFinish?: (close: () => void) => void;
+}): void {
+  if (document.querySelector(options.guardSelector)) return;
+  const overlay = document.createElement('div');
+  overlay.className = options.overlayClass ? `terms-overlay ${options.overlayClass}` : 'terms-overlay';
+
+  const dialog = document.createElement('div');
+  dialog.className = options.dialogClass ? `terms-dialog ${options.dialogClass}` : 'terms-dialog';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-labelledby', options.titleId);
+
+  const title = document.createElement('h2');
+  title.id = options.titleId;
+  title.className = 'terms-title';
+  title.textContent = options.titleText;
+
+  const summary = document.createElement('p');
+  summary.className = 'terms-summary';
+  summary.textContent = options.summaryText;
+
+  const actionBtn = document.createElement('button');
+  actionBtn.type = 'button';
+  actionBtn.className = 'terms-action';
+  actionBtn.textContent = options.actionLabel;
+
+  const close = () => {
+    document.removeEventListener('keydown', onKeydown);
+    overlay.remove();
+  };
+  const finish = () => {
+    if (options.onFinish) {
+      options.onFinish(close);
+    } else {
+      close();
+    }
+  };
+  const onKeydown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && options.dismissible) finish();
+  };
+  actionBtn.addEventListener('click', finish);
+  document.addEventListener('keydown', onKeydown);
+  if (options.dismissible) {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) finish();
+    });
+  }
+
+  dialog.append(title, summary, ...options.bodyNodes, actionBtn);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  dialog.scrollTop = 0;
+  actionBtn.focus({ preventScroll: true });
+}
+
 /**
  * 利用上の注意と、集計への協力のウィンドウを出す。
  * first：ページを読み込むたびに出す。同意して始めるを押すまで閉じられず、押すと店長の紹介が始まる
@@ -292,23 +357,6 @@ const AGGREGATE_NOTES = [
  */
 function openTermsDialog(mode: 'first' | 'review', onAccepted?: () => void): void {
   if (document.querySelector('.terms-overlay')) return;
-  const overlay = document.createElement('div');
-  overlay.className = 'terms-overlay';
-
-  const dialog = document.createElement('div');
-  dialog.className = 'terms-dialog';
-  dialog.setAttribute('role', 'dialog');
-  dialog.setAttribute('aria-modal', 'true');
-  dialog.setAttribute('aria-labelledby', 'terms-title');
-
-  const title = document.createElement('h2');
-  title.id = 'terms-title';
-  title.className = 'terms-title';
-  title.textContent = mode === 'first' ? 'はじめに' : 'このツールについて';
-  const summary = document.createElement('p');
-  summary.className = 'terms-summary';
-  summary.textContent = TERMS_SUMMARY;
-
   const noticeHeading = document.createElement('h3');
   noticeHeading.className = 'terms-heading';
   noticeHeading.textContent = '利用上の注意';
@@ -351,43 +399,26 @@ function openTermsDialog(mode: 'first' | 'review', onAccepted?: () => void): voi
   notes.textContent = AGGREGATE_NOTES.join('');
   consentBox.append(checkLabel, notes);
 
-  const actionBtn = document.createElement('button');
-  actionBtn.type = 'button';
-  actionBtn.className = 'terms-action';
-  actionBtn.textContent = mode === 'first' ? '同意して始める' : '閉じる';
-
-  const close = () => {
-    document.removeEventListener('keydown', onKeydown);
-    overlay.remove();
-  };
-  const finish = () => {
-    if (mode === 'first') {
-      saveAggregateConsent(checkbox.checked);
+  mountModalDialog({
+    guardSelector: '.terms-overlay',
+    titleId: 'terms-title',
+    titleText: mode === 'first' ? 'はじめに' : 'このツールについて',
+    summaryText: TERMS_SUMMARY,
+    bodyNodes: [noticeHeading, noticeList, operatorLine, consentBox],
+    actionLabel: mode === 'first' ? '同意して始める' : '閉じる',
+    dismissible: mode === 'review',
+    onFinish: (close) => {
+      if (mode === 'first') {
+        saveAggregateConsent(checkbox.checked);
+        close();
+        onAccepted?.();
+        return;
+      }
+      const changed = checkbox.checked !== (state.aggregateConsent === true);
       close();
-      onAccepted?.();
-      return;
-    }
-    const changed = checkbox.checked !== (state.aggregateConsent === true);
-    close();
-    if (changed) toggleAggregateConsent();
-  };
-  const onKeydown = (e: KeyboardEvent) => {
-    // 最初のウィンドウは、同意して始めるを押すまで閉じない
-    if (e.key === 'Escape' && mode === 'review') finish();
-  };
-  actionBtn.addEventListener('click', finish);
-  document.addEventListener('keydown', onKeydown);
-  if (mode === 'review') {
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) finish();
-    });
-  }
-
-  dialog.append(title, summary, noticeHeading, noticeList, operatorLine, consentBox, actionBtn);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
-  dialog.scrollTop = 0;
-  actionBtn.focus({ preventScroll: true });
+      if (changed) toggleAggregateConsent();
+    },
+  });
 }
 
 /** 「このツールについて」で集計への協力を切り替えたときに反映する。今の挑戦ではなく次の挑戦から効く */
@@ -516,53 +547,23 @@ function renderAggregateTips(
  */
 function openAggregateStatsDialog(): void {
   if (document.querySelector('.stats-overlay')) return;
-  const overlay = document.createElement('div');
-  overlay.className = 'terms-overlay stats-overlay';
-
-  const dialog = document.createElement('div');
-  dialog.className = 'terms-dialog stats-dialog';
-  dialog.setAttribute('role', 'dialog');
-  dialog.setAttribute('aria-modal', 'true');
-  dialog.setAttribute('aria-labelledby', 'stats-title');
-
-  const title = document.createElement('h2');
-  title.id = 'stats-title';
-  title.className = 'terms-title';
-  title.textContent = 'みんなの集計';
-
-  const summary = document.createElement('p');
-  summary.className = 'terms-summary';
-  summary.textContent =
-    '集計への協力にチェックを入れた挑戦から、みんなの進め方の傾向をコツにまとめました。指示の文章や個人を特定できる情報は使わず、挑戦が3件未満の区分は表示しません。';
-
   const bodyBox = document.createElement('div');
   bodyBox.className = 'tips-box';
   bodyBox.setAttribute('aria-live', 'polite');
   renderAggregateTips(bodyBox, null, { loading: true });
 
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'terms-action';
-  closeBtn.textContent = '閉じる';
-
-  const close = () => {
-    document.removeEventListener('keydown', onKeydown);
-    overlay.remove();
-  };
-  const onKeydown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') close();
-  };
-  closeBtn.addEventListener('click', close);
-  document.addEventListener('keydown', onKeydown);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) close();
+  mountModalDialog({
+    guardSelector: '.stats-overlay',
+    overlayClass: 'stats-overlay',
+    dialogClass: 'stats-dialog',
+    titleId: 'stats-title',
+    titleText: 'みんなの集計',
+    summaryText:
+      '集計への協力にチェックを入れた挑戦から、みんなの進め方の傾向をコツにまとめました。指示の文章や個人を特定できる情報は使わず、挑戦が3件未満の区分は表示しません。',
+    bodyNodes: [bodyBox],
+    actionLabel: '閉じる',
+    dismissible: true,
   });
-
-  dialog.append(title, summary, bodyBox, closeBtn);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
-  dialog.scrollTop = 0;
-  closeBtn.focus({ preventScroll: true });
 
   const minWait = sleep(160);
   void Promise.all([

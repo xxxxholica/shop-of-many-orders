@@ -113,6 +113,7 @@ function loadLocalEnv(): void {
         const eqIdx = line.indexOf('=');
         if (eqIdx <= 0) continue;
         const key = line.slice(0, eqIdx).trim();
+        if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) continue;
         const val = line.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, '');
         if (!(key in process.env) && val) {
           process.env[key] = val;
@@ -1632,8 +1633,6 @@ export async function evaluateAppWithPersonas(req: EvaluateRequest): Promise<Eva
   const finalizeWithClearFeedback = () =>
     finalizeTelemetryOnEvaluate(
       req.cohortId,
-      reviewers.length,
-      reviewers.length,
       req.runId,
       req.turnCount,
     ).then(
@@ -1738,13 +1737,10 @@ export async function evaluateAppWithPersonas(req: EvaluateRequest): Promise<Eva
     };
   });
 
-  const achievedCount = results.filter((r) => r.outcome === 'achieved').length;
   const telemetryPromise =
     prestartedClearPromise ??
     finalizeTelemetryOnEvaluate(
       req.cohortId,
-      achievedCount,
-      results.length,
       req.runId,
       req.turnCount,
     );

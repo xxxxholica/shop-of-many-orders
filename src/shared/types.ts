@@ -339,7 +339,6 @@ export interface RecordDecisionRequest {
   targetId: string;
   chosenLabel: string;
   reason: string;
-  cohortId?: TargetCohortId;
 }
 
 export interface RecordDecisionResponse {

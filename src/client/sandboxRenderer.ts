@@ -1,5 +1,6 @@
 import {
   applyActions,
+  buildActionsFromDataAttrs,
   createInitialState,
   hasCompletionAction,
   isComponentVisible,
@@ -7,7 +8,6 @@ import {
   isInputFilled,
   coerceStateValue,
   isSafeStateKey,
-  parseSetStateAttribute,
   renderLabel,
   renderTemplate,
   withDerivedValues,
@@ -17,6 +17,7 @@ import {
   buildStandaloneSandboxHtml,
   escapeHtml,
   FORBIDDEN_CUSTOM_HTML_TAGS,
+  isForbiddenCustomHtmlAttr,
   sanitizeCssColor,
   sanitizeCustomCss,
   sanitizeCustomHtml,
@@ -639,7 +640,7 @@ function renderSandboxAppInner(
     container.innerHTML = '';
     iframe = document.createElement('iframe');
     iframe.className = 'sandbox-iframe';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+    iframe.setAttribute('sandbox', 'allow-same-origin');
     iframe.title = spec.title || 'お題アプリ';
     container.appendChild(iframe);
   }
@@ -732,30 +733,8 @@ function renderSandboxAppInner(
   const body = targetDoc.createElement('div');
   body.className = 'sandbox-app-body';
 
-  const emitTaskCompletedEvent = () => {
-    try {
-      const targetOrigin =
-        window.location?.origin && window.location.origin !== 'null'
-          ? window.location.origin
-          : '*';
-      window.postMessage(
-        {
-          type: 'PONKOTSU_TASK_COMPLETED',
-          specId: spec.id,
-          completedAt: new Date().toISOString(),
-        },
-        targetOrigin,
-      );
-    } catch {
-      // postMessage 失敗時は無視
-    }
-  };
-
   const executeActions = (actions: ComponentAction[]) => {
     const result = applyActions(spec, liveState, actions);
-    if (result.completed) {
-      emitTaskCompletedEvent();
-    }
     // 購入完了・別ページへの移動はページとして見せ、少しすると最初の画面に戻る
     if (result.completed || result.openedPage) {
       if (result.openedPage) {
@@ -801,7 +780,6 @@ function renderSandboxAppInner(
     frag.querySelectorAll('*').forEach((node) => {
       for (const attr of Array.from(node.attributes)) {
         const attrName = attr.name.toLowerCase();
-        const attrVal = attr.value.replace(/[\s\u0000-\u001f]+/g, '');
         if (attrName === 'style') {
           const cleanedCss = sanitizeCustomCss(attr.value);
           if (cleanedCss) {
@@ -811,21 +789,7 @@ function renderSandboxAppInner(
           }
           continue;
         }
-        const isSafeDataImage =
-          /^data:image\/(?:png|jpeg|jpg|gif|webp);base64,[a-z0-9+/=]+$/i.test(attrVal);
-        if (
-          attrName.startsWith('on') ||
-          attrName === 'srcdoc' ||
-          attrName === 'ping' ||
-          attrName === 'srcset' ||
-          attrName === 'xlink:href' ||
-          attrName === 'action' ||
-          attrName === 'formaction' ||
-          attrName === 'poster' ||
-          attrName === 'background' ||
-          (attrName === 'src' && !isSafeDataImage) ||
-          (attrName === 'href' && !attrVal.startsWith('#'))
-        ) {
+        if (isForbiddenCustomHtmlAttr(attrName, attr.value)) {
           node.removeAttribute(attr.name);
         }
       }
@@ -862,32 +826,7 @@ function renderSandboxAppInner(
             callbacks.onStatePatch({ [comp.stateKey]: 'closed' });
             return;
           }
-          const acts: ComponentAction[] = [];
-          const setSpec = el.dataset.setState;
-          if (setSpec) {
-            acts.push(...parseSetStateAttribute(spec, setSpec));
-          }
-          if (el.dataset.toggleState) {
-            const k = el.dataset.toggleState.trim();
-            if (isSafeStateKey(k)) {
-              acts.push({ type: 'toggle_state', targetKey: k });
-            }
-          }
-          if (el.dataset.incrementState) {
-            const k = el.dataset.incrementState.trim();
-            if (isSafeStateKey(k)) {
-              acts.push({ type: 'increment_state', targetKey: k });
-            }
-          }
-          if (el.dataset.toast) {
-            acts.push({ type: 'show_toast', message: el.dataset.toast });
-          }
-          if (el.dataset.completeTask !== undefined) {
-            acts.push({
-              type: 'complete_task',
-              message: el.dataset.completeTask || 'ご購入ありがとうございます',
-            });
-          }
+          const acts = buildActionsFromDataAttrs(spec, el.dataset);
           if (acts.length > 0) {
             executeActions(acts);
           }

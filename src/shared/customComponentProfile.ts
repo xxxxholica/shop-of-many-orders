@@ -3,7 +3,7 @@
 // 読み取った結果からシミュレーター用の部品を組み立てるのは、このファイルのコードの規則で行う。
 // 同じ読み取り結果なら、必ず同じ部品と同じ座標になる
 
-import { isSafeStateKey, parseSetStateAttribute } from './appRuntime.ts';
+import { buildActionsFromDataAttrs, isSafeStateKey } from './appRuntime.ts';
 import type {
   AppComponent,
   AppSpec,
@@ -119,15 +119,14 @@ export function parseCustomHtmlActions(spec: AppSpec, customHtml: string | undef
   for (const m of customHtml.matchAll(attrRe)) {
     const kind = m[1].toLowerCase();
     const raw = (m[2] ?? m[3] ?? '').trim();
-    if (kind === 'set-state') {
-      acts.push(...parseSetStateAttribute(spec, raw));
-    } else if (kind === 'toggle-state' && raw && isSafeStateKey(raw)) {
-      acts.push({ type: 'toggle_state', targetKey: raw });
-    } else if (kind === 'increment-state' && raw && isSafeStateKey(raw)) {
-      acts.push({ type: 'increment_state', targetKey: raw });
-    } else if (kind === 'complete-task') {
-      acts.push({ type: 'complete_task', message: raw || 'ご購入ありがとうございます' });
-    }
+    acts.push(
+      ...buildActionsFromDataAttrs(spec, {
+        setState: kind === 'set-state' ? raw : undefined,
+        toggleState: kind === 'toggle-state' ? raw : undefined,
+        incrementState: kind === 'increment-state' ? raw : undefined,
+        completeTask: kind === 'complete-task' ? raw : undefined,
+      }),
+    );
   }
   return acts;
 }

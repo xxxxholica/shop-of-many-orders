@@ -264,6 +264,45 @@ export function parseSetStateAttribute(spec: AppSpec, raw: string): ComponentAct
   return acts;
 }
 
+/** 独自の部品の data-* 属性から、実行するアクションの並びを組み立てる（描画とシミュレーターで共通） */
+export function buildActionsFromDataAttrs(
+  spec: AppSpec,
+  attrs: {
+    setState?: string;
+    toggleState?: string;
+    incrementState?: string;
+    toast?: string;
+    completeTask?: string;
+  },
+): ComponentAction[] {
+  const acts: ComponentAction[] = [];
+  if (attrs.setState) {
+    acts.push(...parseSetStateAttribute(spec, attrs.setState));
+  }
+  if (attrs.toggleState) {
+    const k = attrs.toggleState.trim();
+    if (isSafeStateKey(k)) {
+      acts.push({ type: 'toggle_state', targetKey: k });
+    }
+  }
+  if (attrs.incrementState) {
+    const k = attrs.incrementState.trim();
+    if (isSafeStateKey(k)) {
+      acts.push({ type: 'increment_state', targetKey: k });
+    }
+  }
+  if (attrs.toast) {
+    acts.push({ type: 'show_toast', message: attrs.toast });
+  }
+  if (attrs.completeTask !== undefined) {
+    acts.push({
+      type: 'complete_task',
+      message: attrs.completeTask || 'ご購入ありがとうございます',
+    });
+  }
+  return acts;
+}
+
 export function createInitialState(spec: AppSpec): AppState {
   const state: AppState = {};
   for (const s of spec.state) {

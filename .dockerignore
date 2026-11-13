@@ -5,6 +5,17 @@ dist
 .githooks
 .env
 .env.*
+*.pem
+*.key
+*.p12
+*credentials*.json
+service-account*.json
+.gcp
 *.log
 .DS_Store
+.vscode
+.claude
+.aider*
+docs
+scripts
 test

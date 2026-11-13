@@ -48,6 +48,8 @@ export const FORBIDDEN_CUSTOM_HTML_TAGS = [
   'script',
   'style',
   'iframe',
+  'frame',
+  'frameset',
   'object',
   'embed',
   'applet',
@@ -70,16 +72,81 @@ export const FORBIDDEN_CUSTOM_HTML_TAGS = [
   'video',
   'source',
   'track',
+  'marquee',
+  'dialog',
 ] as const;
 
 const FORBIDDEN_TAG_PAIR_RE = new RegExp(
-  `<(${FORBIDDEN_CUSTOM_HTML_TAGS.join('|')})\\b[\\s\\S]*?<\\/\\1>`,
+  `<(${FORBIDDEN_CUSTOM_HTML_TAGS.join('|')})\\b[\\s\\S]*?<\\/\\1\\s*>`,
   'gi',
 );
 const FORBIDDEN_TAG_SINGLE_RE = new RegExp(
-  `<(${FORBIDDEN_CUSTOM_HTML_TAGS.join('|')})\\b[^>]*\\/?>`,
+  `<\\/?(${FORBIDDEN_CUSTOM_HTML_TAGS.join('|')})\\b[^>]*\\/?>`,
   'gi',
 );
+const FORBIDDEN_TAG_UNCLOSED_RE = new RegExp(
+  `<\\/?(${FORBIDDEN_CUSTOM_HTML_TAGS.join('|')})\\b[\\s\\S]*$`,
+  'gi',
+);
+
+const FORBIDDEN_CUSTOM_HTML_ATTRS = new Set([
+  'srcdoc',
+  'ping',
+  'srcset',
+  'xlink:href',
+  'action',
+  'formaction',
+  'form',
+  'is',
+  'popover',
+  'popovertarget',
+  'command',
+  'commandfor',
+  'autofocus',
+  'poster',
+  'background',
+  'data-component-id',
+  'data-spec-id',
+]);
+
+function decodeHtmlEntitiesForAttrCheck(raw: string): string {
+  return raw
+    .replace(/&#x([0-9a-f]+);?/gi, (_m, hex: string) => {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : '';
+    })
+    .replace(/&#([0-9]+);?/g, (_m, dec: string) => {
+      const code = Number.parseInt(dec, 10);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : '';
+    })
+    .replace(/&colon;?/gi, ':')
+    .replace(/&(tab|newline);?/gi, '')
+    .replace(/[\s\u0000-\u001f]+/g, '');
+}
+
+export function isSafeDataImageUrl(raw: string): boolean {
+  const cleaned = decodeHtmlEntitiesForAttrCheck(raw);
+  return /^data:image\/(?:png|jpeg|jpg|gif|webp);base64,[a-z0-9+/=]+$/i.test(cleaned);
+}
+
+export function isForbiddenCustomHtmlAttr(attrName: string, attrValue: string): boolean {
+  const lower = attrName.toLowerCase();
+  if (lower.startsWith('on') || FORBIDDEN_CUSTOM_HTML_ATTRS.has(lower)) {
+    return true;
+  }
+  if (lower === 'src') {
+    return !isSafeDataImageUrl(attrValue);
+  }
+  if (lower === 'href') {
+    const cleaned = decodeHtmlEntitiesForAttrCheck(attrValue);
+    return !cleaned.startsWith('#');
+  }
+  return false;
+}
 
 /**
  * カスタムCSS文字列から外部通信やスクリプト実行につながる危険な記述を取り除く。
@@ -101,29 +168,56 @@ export function sanitizeCustomCss(raw: string | undefined): string {
     .trim();
 }
 
+const HTML_OPEN_TAG_RE = /<([a-zA-Z][a-zA-Z0-9:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?>)/g;
+const HTML_ATTR_TOKEN_RE =
+  /(?:\/+\s*)?([a-zA-Z_:][a-zA-Z0-9_.:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+
 /**
  * カスタムHTML文字列からスクリプトや危険な埋め込みタグ・イベント属性を取り除く。
  */
 export function sanitizeCustomHtml(raw: string): string {
-  return raw
+  let html = raw
     .slice(0, 8000)
     .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
-    .replace(FORBIDDEN_TAG_PAIR_RE, '')
-    .replace(FORBIDDEN_TAG_SINGLE_RE, '')
-    .replace(/(?<=[\s/"'])on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/(?<=[\s/"'])(?:srcdoc|ping)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(
-      /(?<=[\s/"'])(href|src|srcset|xlink:href|action|formaction|poster|background)\s*=\s*(?:"\s*(?:javascript|vbscript|data)\s*:[^"]*"|'\s*(?:javascript|vbscript|data)\s*:[^']*'|(?:\s*(?:javascript|vbscript|data)\s*:[^\s>]+))/gi,
-      '',
-    )
-    .replace(/\sstyle\s*=\s*"([^"]*)"/gi, (_m, css: string) => {
-      const cleaned = sanitizeCustomCss(css);
-      return cleaned ? ` style="${escapeHtml(cleaned)}"` : '';
-    })
-    .replace(/\sstyle\s*=\s*'([^']*)'/gi, (_m, css: string) => {
-      const cleaned = sanitizeCustomCss(css);
-      return cleaned ? ` style="${escapeHtml(cleaned)}"` : '';
-    });
+    .replace(/<[a-zA-Z/!?][^>]*$/, '');
+
+  // 入れ子になった偽装タグ（例: <scr<script></script>ipt>）が残らないよう収束するまで除去する
+  for (let pass = 0; pass < 16; pass++) {
+    const next = html
+      .replace(FORBIDDEN_TAG_PAIR_RE, '')
+      .replace(FORBIDDEN_TAG_SINGLE_RE, '')
+      .replace(FORBIDDEN_TAG_UNCLOSED_RE, '');
+    if (next === html) break;
+    html = next;
+  }
+
+  return html.replace(
+    HTML_OPEN_TAG_RE,
+    (_full, tagName: string, attrChunk: string, closeToken: string) => {
+      if (!attrChunk) return `<${tagName}${closeToken}`;
+      const cleanedAttrs = attrChunk.replace(
+        HTML_ATTR_TOKEN_RE,
+        (
+          attrMatch: string,
+          attrName: string,
+          dqVal: string | undefined,
+          sqVal: string | undefined,
+          uqVal: string | undefined,
+        ) => {
+          const val = dqVal ?? sqVal ?? uqVal ?? '';
+          if (attrName.toLowerCase() === 'style') {
+            const cleanedCss = sanitizeCustomCss(val);
+            return cleanedCss ? ` style="${escapeHtml(cleanedCss)}"` : '';
+          }
+          if (isForbiddenCustomHtmlAttr(attrName, val)) {
+            return '';
+          }
+          return attrMatch;
+        },
+      );
+      return `<${tagName}${cleanedAttrs}${closeToken}`;
+    },
+  );
 }
 
 /**

@@ -11,7 +11,7 @@ const extraAllowedHosts = process.env.VITE_ALLOWED_HOSTS
 export default defineConfig({
   plugins: [
     {
-      name: 'yukid-df-hack-api',
+      name: 'shop-of-many-orders-api',
       configureServer(server) {
         server.middlewares.use(async (req, res, next) => {
           const handled = await handleApiRequest(req, res);
